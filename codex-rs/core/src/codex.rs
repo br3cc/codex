@@ -37,12 +37,12 @@ use crate::apply_patch::convert_apply_patch_to_protocol;
 use crate::apply_patch::get_writable_roots;
 use crate::apply_patch::{self};
 use crate::client::ModelClient;
-use crate::client_common::EnvironmentContext;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::config::Config;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
+use crate::environment_context::EnvironmentContext;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::error::SandboxErr;
@@ -253,6 +253,10 @@ impl Session {
 
     pub(crate) fn get_approval_policy(&self) -> AskForApproval {
         self.approval_policy
+    }
+
+    pub(crate) fn get_sandbox_policy(&self) -> &SandboxPolicy {
+        &self.sandbox_policy
     }
 
     pub(crate) fn get_cwd(&self) -> &Path {
@@ -893,6 +897,23 @@ async fn submission_loop(
                     }
                 }
 
+                // Record stable user instructions once, and the initial environment
+                // context snapshot as regular user messages so payload building
+                // reads from history rather than injecting on each request.
+                if let Some(sess_arc) = &sess {
+                    // User instructions are stable; record once per session config.
+                    if let Some(ui) = sess_arc.user_instructions.clone() {
+                        let msg = Prompt::format_user_instructions_message(&ui);
+                        sess_arc.record_conversation_items(&[msg]).await;
+                    }
+
+                    // Always record an initial environment context snapshot.
+                    let ec_msg = Prompt::format_environment_context_message(
+                        &EnvironmentContext::from(sess_arc.as_ref()),
+                    );
+                    sess_arc.record_conversation_items(&[ec_msg]).await;
+                }
+
                 // Gather history metadata for SessionConfiguredEvent.
                 let (history_log_id, history_entry_count) =
                     crate::message_history::history_metadata(&config).await;
@@ -1268,15 +1289,9 @@ async fn run_turn(
 
     let prompt = Prompt {
         input,
-        user_instructions: sess.user_instructions.clone(),
         store: !sess.disable_response_storage,
         tools,
         base_instructions_override: sess.base_instructions.clone(),
-        environment_context: Some(EnvironmentContext {
-            cwd: sess.cwd.clone(),
-            approval_policy: sess.approval_policy,
-            sandbox_policy: sess.sandbox_policy.clone(),
-        }),
     };
 
     let mut retries = 0;
@@ -1514,9 +1529,7 @@ async fn run_compact_task(
 
     let prompt = Prompt {
         input: turn_input,
-        user_instructions: None,
         store: !sess.disable_response_storage,
-        environment_context: None,
         tools: Vec::new(),
         base_instructions_override: Some(compact_instructions.clone()),
     };
