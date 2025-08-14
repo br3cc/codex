@@ -5,9 +5,9 @@
     "context": "..",
     "platform": "linux/arm64"
   },
-
-  /* Force VS Code to run the container as arm64 in
-     case your host is x86 (or vice-versa). */
+  
+  /* Force VS Code to run the container as arm64
+     even if your host is x86. */
   "runArgs": ["--platform=linux/arm64"],
 
   "containerEnv": {
